@@ -16,27 +16,35 @@ pub fn greet() {
 }
 
 #[wasm_bindgen]
-pub fn run() -> Result<(), wasm_bindgen::JsValue> {
-    let window = web_sys::window().unwrap();
-    let document = window.document().unwrap();
+pub struct Runner {
+    closure: wasm_bindgen::closure::Closure<dyn FnMut()>,
+    token: i32,
+}
 
-    let canvas = document
-        .get_element_by_id("physsim-viz-canvas")
-        .expect("Canvas not found")
-        .dyn_into::<web_sys::HtmlCanvasElement>()
-        .expect("Canvas isn't canvas");
+#[wasm_bindgen]
+impl Runner {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Result<Self, wasm_bindgen::JsValue> {
+        let window = web_sys::window().unwrap();
+        let document = window.document().unwrap();
 
-    let ctx = canvas
-        .get_context("webgl2")
-        .expect("Couldn't get WebGL2 context")
-        .unwrap()
-        .dyn_into::<web_sys::WebGl2RenderingContext>()
-        .unwrap();
+        let canvas = document
+            .get_element_by_id("physsim-viz-canvas")
+            .expect("Canvas not found")
+            .dyn_into::<web_sys::HtmlCanvasElement>()
+            .expect("Canvas isn't canvas");
 
-    let vert_shader = compile_shader(
-        &ctx,
-        web_sys::WebGl2RenderingContext::VERTEX_SHADER,
-        r##"#version 300 es
+        let ctx = canvas
+            .get_context("webgl2")
+            .expect("Couldn't get WebGL2 context")
+            .unwrap()
+            .dyn_into::<web_sys::WebGl2RenderingContext>()
+            .unwrap();
+
+        let vert_shader = compile_shader(
+            &ctx,
+            web_sys::WebGl2RenderingContext::VERTEX_SHADER,
+            r##"#version 300 es
 
         in vec4 position;
 
@@ -44,12 +52,12 @@ pub fn run() -> Result<(), wasm_bindgen::JsValue> {
             gl_Position = position;
         }
         "##,
-    )?;
+        )?;
 
-    let frag_shader = compile_shader(
-        &ctx,
-        web_sys::WebGl2RenderingContext::FRAGMENT_SHADER,
-        r##"#version 300 es
+        let frag_shader = compile_shader(
+            &ctx,
+            web_sys::WebGl2RenderingContext::FRAGMENT_SHADER,
+            r##"#version 300 es
 
         precision highp float;
         out vec4 outColor;
@@ -58,48 +66,65 @@ pub fn run() -> Result<(), wasm_bindgen::JsValue> {
             outColor = vec4(1, 1, 1, 1);
         }
         "##,
-    )?;
+        )?;
 
-    let program = link_program(&ctx, &vert_shader, &frag_shader)?;
-    ctx.use_program(Some(&program));
+        let program = link_program(&ctx, &vert_shader, &frag_shader)?;
+        ctx.use_program(Some(&program));
 
-    web_sys::console::log_1(&("Initialized WebGL2!".into()));
+        web_sys::console::log_1(&("Initialized WebGL2!".into()));
 
-    let vertices: [f32; 9] = [-0.7, -0.7, 0.0, 0.7, -0.7, 0.0, 0.0, 0.7, 0.0];
+        let vertices: [f32; 9] = [-0.7, -0.7, 0.0, 0.7, -0.7, 0.0, 0.0, 0.7, 0.0];
 
-    let pos_attrib_idx = ctx.get_attrib_location(&program, "position");
-    let vbo = ctx.create_buffer().ok_or("Couldn't create VBO")?;
-    ctx.bind_buffer(web_sys::WebGl2RenderingContext::ARRAY_BUFFER, Some(&vbo));
+        let pos_attrib_idx = ctx.get_attrib_location(&program, "position");
+        let vbo = ctx.create_buffer().ok_or("Couldn't create VBO")?;
+        ctx.bind_buffer(web_sys::WebGl2RenderingContext::ARRAY_BUFFER, Some(&vbo));
 
-    unsafe {
-        let vertices_view = js_sys::Float32Array::view(&vertices);
+        unsafe {
+            let vertices_view = js_sys::Float32Array::view(&vertices);
 
-        ctx.buffer_data_with_array_buffer_view(
-            web_sys::WebGl2RenderingContext::ARRAY_BUFFER,
-            &vertices_view,
-            web_sys::WebGl2RenderingContext::STATIC_DRAW,
+            ctx.buffer_data_with_array_buffer_view(
+                web_sys::WebGl2RenderingContext::ARRAY_BUFFER,
+                &vertices_view,
+                web_sys::WebGl2RenderingContext::STATIC_DRAW,
+            );
+        }
+
+        let vao = ctx.create_vertex_array().ok_or("Couldn't create VAO")?;
+        ctx.bind_vertex_array(Some(&vao));
+
+        ctx.vertex_attrib_pointer_with_i32(
+            pos_attrib_idx as u32,
+            3,
+            web_sys::WebGl2RenderingContext::FLOAT,
+            false,
+            0,
+            0,
         );
+        ctx.enable_vertex_attrib_array(pos_attrib_idx as u32);
+
+        ctx.bind_vertex_array(Some(&vao));
+
+        let vert_count = (vertices.len() / 3) as i32;
+        let closure = Closure::new(move || {
+            draw(&ctx, vert_count);
+        });
+        let token = window.set_interval_with_callback_and_timeout_and_arguments_0(
+            closure.as_ref().unchecked_ref(),
+            1000,
+        )?;
+
+        Ok(Runner { closure, token })
     }
+}
 
-    let vao = ctx.create_vertex_array().ok_or("Couldn't create VAO")?;
-    ctx.bind_vertex_array(Some(&vao));
-
-    ctx.vertex_attrib_pointer_with_i32(
-        pos_attrib_idx as u32,
-        3,
-        web_sys::WebGl2RenderingContext::FLOAT,
-        false,
-        0,
-        0,
-    );
-    ctx.enable_vertex_attrib_array(pos_attrib_idx as u32);
-
-    ctx.bind_vertex_array(Some(&vao));
-
-    let vert_count = (vertices.len() / 3) as i32;
-    draw(&ctx, vert_count);
-
-    Ok(())
+impl Drop for Runner {
+    fn drop(&mut self) {
+        web_sys::console::log_1(&"Dropping Runner...".into());
+        match web_sys::window() {
+            Some(window) => window.clear_interval_with_handle(self.token),
+            _ => {}
+        }
+    }
 }
 
 fn compile_shader(
@@ -153,6 +178,8 @@ fn link_program(
 }
 
 fn draw(ctx: &web_sys::WebGl2RenderingContext, vert_count: i32) {
+    web_sys::console::log_1(&"Drawing...".into());
+
     ctx.clear_color(0.0, 0.0, 0.0, 1.0);
     ctx.clear(web_sys::WebGl2RenderingContext::COLOR_BUFFER_BIT);
 
