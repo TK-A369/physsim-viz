@@ -1,0 +1,8 @@
+physsim-viz-rust/target
+physsim-viz-rust/**/*.rs.bk
+physsim-viz-rust/Cargo.lock
+physsim-viz-rust/bin/
+physsim-viz-rust/pkg/
+physsim-viz-rust/wasm-pack.log
+physsim-web/node_modules
+physsim-web/dist

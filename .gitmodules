@@ -1,0 +1,3 @@
+[submodule "physsim-viz-rust/deps/physsim"]
+	path = physsim-viz-rust/deps/physsim
+	url = https://github.com/TK-A369/physsim.git
