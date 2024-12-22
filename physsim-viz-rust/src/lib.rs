@@ -15,6 +15,10 @@ pub fn greet() {
     alert("Hello, physsim-viz-rust!");
 }
 
+struct RunnerState {
+    counter: i32,
+}
+
 #[wasm_bindgen]
 pub struct Runner {
     closure: wasm_bindgen::closure::Closure<dyn FnMut()>,
@@ -73,25 +77,14 @@ impl Runner {
 
         web_sys::console::log_1(&("Initialized WebGL2!".into()));
 
-        let vertices: [f32; 9] = [-0.7, -0.7, 0.0, 0.7, -0.7, 0.0, 0.0, 0.7, 0.0];
-
         let pos_attrib_idx = ctx.get_attrib_location(&program, "position");
         let vbo = ctx.create_buffer().ok_or("Couldn't create VBO")?;
         ctx.bind_buffer(web_sys::WebGl2RenderingContext::ARRAY_BUFFER, Some(&vbo));
 
-        unsafe {
-            let vertices_view = js_sys::Float32Array::view(&vertices);
-
-            ctx.buffer_data_with_array_buffer_view(
-                web_sys::WebGl2RenderingContext::ARRAY_BUFFER,
-                &vertices_view,
-                web_sys::WebGl2RenderingContext::STATIC_DRAW,
-            );
-        }
-
         let vao = ctx.create_vertex_array().ok_or("Couldn't create VAO")?;
         ctx.bind_vertex_array(Some(&vao));
 
+        ctx.enable_vertex_attrib_array(pos_attrib_idx as u32);
         ctx.vertex_attrib_pointer_with_i32(
             pos_attrib_idx as u32,
             3,
@@ -100,17 +93,17 @@ impl Runner {
             0,
             0,
         );
-        ctx.enable_vertex_attrib_array(pos_attrib_idx as u32);
 
         ctx.bind_vertex_array(Some(&vao));
 
-        let vert_count = (vertices.len() / 3) as i32;
+        let mut runner_state = RunnerState { counter: 0 };
+
         let closure = Closure::new(move || {
-            draw(&ctx, vert_count);
+            draw(&ctx, &vbo, &vao, &mut runner_state);
         });
         let token = window.set_interval_with_callback_and_timeout_and_arguments_0(
             closure.as_ref().unchecked_ref(),
-            1000,
+            100,
         )?;
 
         Ok(Runner { closure, token })
@@ -177,11 +170,45 @@ fn link_program(
     }
 }
 
-fn draw(ctx: &web_sys::WebGl2RenderingContext, vert_count: i32) {
+fn draw(
+    ctx: &web_sys::WebGl2RenderingContext,
+    vbo: &web_sys::WebGlBuffer,
+    vao: &web_sys::WebGlVertexArrayObject,
+    state: &mut RunnerState,
+) {
     web_sys::console::log_1(&"Drawing...".into());
+
+    let vertices: [f32; 9] = [
+        -0.7,
+        -0.7,
+        0.0,
+        0.7,
+        -0.7,
+        0.0,
+        -0.8 + (state.counter as f32) * 0.002,
+        0.7,
+        0.0,
+    ];
+
+    ctx.bind_buffer(web_sys::WebGl2RenderingContext::ARRAY_BUFFER, Some(&vbo));
+    ctx.bind_vertex_array(Some(&vao));
+
+    unsafe {
+        let vertices_view = js_sys::Float32Array::view(&vertices);
+
+        ctx.buffer_data_with_array_buffer_view(
+            web_sys::WebGl2RenderingContext::ARRAY_BUFFER,
+            &vertices_view,
+            web_sys::WebGl2RenderingContext::STATIC_DRAW,
+        );
+    }
+
+    let vert_count = (vertices.len() / 3) as i32;
 
     ctx.clear_color(0.0, 0.0, 0.0, 1.0);
     ctx.clear(web_sys::WebGl2RenderingContext::COLOR_BUFFER_BIT);
 
     ctx.draw_arrays(web_sys::WebGl2RenderingContext::TRIANGLES, 0, vert_count);
+
+    state.counter += 1;
 }
