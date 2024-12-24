@@ -15,10 +15,47 @@ pub fn greet() {
     alert("Hello, physsim-viz-rust!");
 }
 
+struct KeysPressed {
+    w: bool,
+    s: bool,
+    a: bool,
+    d: bool,
+    q: bool,
+    e: bool,
+    i: bool,
+    k: bool,
+    j: bool,
+    l: bool,
+    u: bool,
+    o: bool,
+}
+
+impl KeysPressed {
+    fn new() -> Self {
+        Self {
+            w: false,
+            s: false,
+            a: false,
+            d: false,
+            q: false,
+            e: false,
+            i: false,
+            k: false,
+            j: false,
+            l: false,
+            u: false,
+            o: false,
+        }
+    }
+}
+
 struct RunnerState {
     counter: i32,
     rigid_body: physsim::RigidBody<f32>,
     wireframe: bool,
+    keys_pressed: KeysPressed,
+    camera_pos: nalgebra::Vector3<f32>,
+    camera_rot: nalgebra::Rotation3<f32>,
 }
 
 impl RunnerState {
@@ -33,6 +70,9 @@ impl RunnerState {
                 inv_ine: nalgebra::Matrix3::new(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             },
             wireframe: false,
+            keys_pressed: KeysPressed::new(),
+            camera_pos: nalgebra::Vector3::<f32>::zeros(),
+            camera_rot: nalgebra::Rotation3::<f32>::identity(),
         }
     }
 }
@@ -41,6 +81,7 @@ impl RunnerState {
 pub struct Runner {
     interval_closure: wasm_bindgen::closure::Closure<dyn FnMut()>,
     keydown_closure: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::KeyboardEvent)>,
+    keyup_closure: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::KeyboardEvent)>,
     token: i32,
 }
 
@@ -130,24 +171,66 @@ impl Runner {
         )?;
 
         // Keypresses
-        let keydown_closure =
+        let keydown_closure = {
+            let runner_state = runner_state.clone();
             wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
                 move |ev: web_sys::KeyboardEvent| {
                     web_sys::console::log_1(&format!("Got keydown event! {}", ev.code()).into());
 
-                    if ev.code() == "KeyV" {
-                        let mut state_locked = runner_state.write().unwrap();
-                        state_locked.wireframe = !state_locked.wireframe;
+                    let mut state_locked = runner_state.write().unwrap();
+                    match ev.code().as_str() {
+                        "KeyV" => state_locked.wireframe = !state_locked.wireframe,
+                        "KeyW" => state_locked.keys_pressed.w = true,
+                        "KeyS" => state_locked.keys_pressed.s = true,
+                        "KeyA" => state_locked.keys_pressed.a = true,
+                        "KeyD" => state_locked.keys_pressed.d = true,
+                        "KeyQ" => state_locked.keys_pressed.q = true,
+                        "KeyE" => state_locked.keys_pressed.e = true,
+                        "KeyI" => state_locked.keys_pressed.i = true,
+                        "KeyK" => state_locked.keys_pressed.k = true,
+                        "KeyJ" => state_locked.keys_pressed.j = true,
+                        "KeyL" => state_locked.keys_pressed.l = true,
+                        "KeyU" => state_locked.keys_pressed.u = true,
+                        "KeyO" => state_locked.keys_pressed.o = true,
+                        _ => {}
+                    }
+                },
+            )
+        };
+        document
+            .add_event_listener_with_callback(&"keydown", keydown_closure.as_ref().unchecked_ref())
+            .unwrap();
+        let keyup_closure =
+            wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
+                move |ev: web_sys::KeyboardEvent| {
+                    web_sys::console::log_1(&format!("Got keyup event! {}", ev.code()).into());
+
+                    let mut state_locked = runner_state.write().unwrap();
+                    match ev.code().as_str() {
+                        "KeyW" => state_locked.keys_pressed.w = false,
+                        "KeyS" => state_locked.keys_pressed.s = false,
+                        "KeyA" => state_locked.keys_pressed.a = false,
+                        "KeyD" => state_locked.keys_pressed.d = false,
+                        "KeyQ" => state_locked.keys_pressed.q = false,
+                        "KeyE" => state_locked.keys_pressed.e = false,
+                        "KeyI" => state_locked.keys_pressed.i = false,
+                        "KeyK" => state_locked.keys_pressed.k = false,
+                        "KeyJ" => state_locked.keys_pressed.j = false,
+                        "KeyL" => state_locked.keys_pressed.l = false,
+                        "KeyU" => state_locked.keys_pressed.u = false,
+                        "KeyO" => state_locked.keys_pressed.o = false,
+                        _ => {}
                     }
                 },
             );
         document
-            .add_event_listener_with_callback(&"keydown", keydown_closure.as_ref().unchecked_ref())
+            .add_event_listener_with_callback(&"keyup", keyup_closure.as_ref().unchecked_ref())
             .unwrap();
 
         Ok(Runner {
             interval_closure,
             keydown_closure,
+            keyup_closure,
             token,
         })
     }
@@ -392,8 +475,11 @@ fn draw(
 
     let persp = nalgebra::Perspective3::new(aspect, fovy, z_near, z_far);
 
-    let translation = nalgebra::Translation3::<f32>::new(0.0, 0.0, -5.0);
-    let proj_mat = persp.as_matrix() * translation.to_homogeneous();
+    let translation = nalgebra::Translation3::<f32>::from(state_locked.camera_pos);
+    let proj_mat = persp.as_matrix()
+        * (translation.to_homogeneous() * state_locked.camera_rot.to_homogeneous())
+            .try_inverse()
+            .unwrap();
 
     ctx.bind_buffer(web_sys::WebGl2RenderingContext::ARRAY_BUFFER, Some(&vbo));
     ctx.bind_vertex_array(Some(&vao));
@@ -427,6 +513,62 @@ fn draw(
         ctx.draw_arrays(web_sys::WebGl2RenderingContext::LINES, 0, vert_count);
     } else {
         ctx.draw_arrays(web_sys::WebGl2RenderingContext::TRIANGLES, 0, vert_count);
+    }
+
+    if state_locked.keys_pressed.w {
+        let cam_rot_mat = state_locked.camera_rot.to_homogeneous();
+        state_locked.camera_pos +=
+            (cam_rot_mat * nalgebra::Vector4::new(0.0, 0.0, -0.1, 1.0)).rows(0, 3);
+    }
+    if state_locked.keys_pressed.s {
+        let cam_rot_mat = state_locked.camera_rot.to_homogeneous();
+        state_locked.camera_pos +=
+            (cam_rot_mat * nalgebra::Vector4::new(0.0, 0.0, 0.1, 1.0)).rows(0, 3);
+    }
+    if state_locked.keys_pressed.a {
+        let cam_rot_mat = state_locked.camera_rot.to_homogeneous();
+        state_locked.camera_pos +=
+            (cam_rot_mat * nalgebra::Vector4::new(-0.1, 0.0, 0.0, 1.0)).rows(0, 3);
+    }
+    if state_locked.keys_pressed.d {
+        let cam_rot_mat = state_locked.camera_rot.to_homogeneous();
+        state_locked.camera_pos +=
+            (cam_rot_mat * nalgebra::Vector4::new(0.1, 0.0, -0.0, 1.0)).rows(0, 3);
+    }
+    if state_locked.keys_pressed.q {
+        let cam_rot_mat = state_locked.camera_rot.to_homogeneous();
+        state_locked.camera_pos +=
+            (cam_rot_mat * nalgebra::Vector4::new(0.0, -0.1, 0.0, 1.0)).rows(0, 3);
+    }
+    if state_locked.keys_pressed.e {
+        let cam_rot_mat = state_locked.camera_rot.to_homogeneous();
+        state_locked.camera_pos +=
+            (cam_rot_mat * nalgebra::Vector4::new(0.0, 0.1, 0.0, 1.0)).rows(0, 3);
+    }
+
+    if state_locked.keys_pressed.i {
+        state_locked.camera_rot = state_locked.camera_rot
+            * nalgebra::Rotation3::<f32>::new(nalgebra::Vector3::new(0.1, 0.0, 0.0));
+    }
+    if state_locked.keys_pressed.k {
+        state_locked.camera_rot = state_locked.camera_rot
+            * nalgebra::Rotation3::<f32>::new(nalgebra::Vector3::new(-0.1, 0.0, 0.0));
+    }
+    if state_locked.keys_pressed.j {
+        state_locked.camera_rot = state_locked.camera_rot
+            * nalgebra::Rotation3::<f32>::new(nalgebra::Vector3::new(0.0, 0.1, 0.0));
+    }
+    if state_locked.keys_pressed.l {
+        state_locked.camera_rot = state_locked.camera_rot
+            * nalgebra::Rotation3::<f32>::new(nalgebra::Vector3::new(0.0, -0.1, 0.0));
+    }
+    if state_locked.keys_pressed.u {
+        state_locked.camera_rot = state_locked.camera_rot
+            * nalgebra::Rotation3::<f32>::new(nalgebra::Vector3::new(0.0, 0.0, 0.1));
+    }
+    if state_locked.keys_pressed.o {
+        state_locked.camera_rot = state_locked.camera_rot
+            * nalgebra::Rotation3::<f32>::new(nalgebra::Vector3::new(0.0, 0.0, -0.1));
     }
 
     state_locked.counter += 1;
