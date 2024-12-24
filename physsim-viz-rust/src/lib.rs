@@ -18,6 +18,7 @@ pub fn greet() {
 struct RunnerState {
     counter: i32,
     rigid_body: physsim::RigidBody<f32>,
+    wireframe: bool,
 }
 
 impl RunnerState {
@@ -31,13 +32,15 @@ impl RunnerState {
                 ang_mom: nalgebra::Vector3::new(0.5, -0.1, 0.3),
                 inv_ine: nalgebra::Matrix3::new(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             },
+            wireframe: false,
         }
     }
 }
 
 #[wasm_bindgen]
 pub struct Runner {
-    closure: wasm_bindgen::closure::Closure<dyn FnMut()>,
+    interval_closure: wasm_bindgen::closure::Closure<dyn FnMut()>,
+    keydown_closure: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::KeyboardEvent)>,
     token: i32,
 }
 
@@ -113,17 +116,40 @@ impl Runner {
 
         ctx.bind_vertex_array(Some(&vao));
 
-        let mut runner_state = RunnerState::new();
+        let mut runner_state = std::sync::Arc::new(std::sync::RwLock::new(RunnerState::new()));
 
-        let closure = Closure::new(move || {
-            draw(&ctx, &vbo, &vao, &program, &mut runner_state);
-        });
+        let interval_closure = {
+            let runner_state = runner_state.clone();
+            Closure::new(move || {
+                draw(&ctx, &vbo, &vao, &program, runner_state.clone());
+            })
+        };
         let token = window.set_interval_with_callback_and_timeout_and_arguments_0(
-            closure.as_ref().unchecked_ref(),
+            interval_closure.as_ref().unchecked_ref(),
             100,
         )?;
 
-        Ok(Runner { closure, token })
+        // Keypresses
+        let keydown_closure =
+            wasm_bindgen::closure::Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(
+                move |ev: web_sys::KeyboardEvent| {
+                    web_sys::console::log_1(&format!("Got keydown event! {}", ev.code()).into());
+
+                    if ev.code() == "KeyV" {
+                        let mut state_locked = runner_state.write().unwrap();
+                        state_locked.wireframe = !state_locked.wireframe;
+                    }
+                },
+            );
+        document
+            .add_event_listener_with_callback(&"keydown", keydown_closure.as_ref().unchecked_ref())
+            .unwrap();
+
+        Ok(Runner {
+            interval_closure,
+            keydown_closure,
+            token,
+        })
     }
 }
 
@@ -187,7 +213,11 @@ fn link_program(
     }
 }
 
-fn cuboid_to_vertices(vertices: &mut Vec<f32>, rigid_body: &physsim::RigidBody<f32>) {
+fn cuboid_to_vertices(
+    vertices: &mut Vec<f32>,
+    rigid_body: &physsim::RigidBody<f32>,
+    wireframe: bool,
+) {
     fn add_vert(vertices: &mut Vec<f32>, v: nalgebra::Vector3<f32>) {
         vertices.push(v.x);
         vertices.push(v.y);
@@ -203,65 +233,115 @@ fn cuboid_to_vertices(vertices: &mut Vec<f32>, rigid_body: &physsim::RigidBody<f
     let v7 = rigid_body.rot_mat * nalgebra::Vector3::new(0.5, 0.5, -0.5) + rigid_body.pos;
     let v8 = rigid_body.rot_mat * nalgebra::Vector3::new(0.5, 0.5, 0.5) + rigid_body.pos;
 
-    //F1
-    add_vert(vertices, v1);
-    add_vert(vertices, v2);
-    add_vert(vertices, v3);
+    if wireframe {
+        //E1
+        add_vert(vertices, v1);
+        add_vert(vertices, v2);
 
-    //F2
-    add_vert(vertices, v2);
-    add_vert(vertices, v3);
-    add_vert(vertices, v4);
+        //E2
+        add_vert(vertices, v1);
+        add_vert(vertices, v3);
 
-    //F3
-    add_vert(vertices, v1);
-    add_vert(vertices, v3);
-    add_vert(vertices, v7);
+        //E3
+        add_vert(vertices, v3);
+        add_vert(vertices, v4);
 
-    //F4
-    add_vert(vertices, v1);
-    add_vert(vertices, v5);
-    add_vert(vertices, v7);
+        //E4
+        add_vert(vertices, v2);
+        add_vert(vertices, v4);
 
-    //F5
-    add_vert(vertices, v1);
-    add_vert(vertices, v2);
-    add_vert(vertices, v6);
+        //E5
+        add_vert(vertices, v5);
+        add_vert(vertices, v6);
 
-    //F6
-    add_vert(vertices, v1);
-    add_vert(vertices, v5);
-    add_vert(vertices, v6);
+        //E6
+        add_vert(vertices, v5);
+        add_vert(vertices, v7);
 
-    //F7
-    add_vert(vertices, v5);
-    add_vert(vertices, v6);
-    add_vert(vertices, v7);
+        //E7
+        add_vert(vertices, v7);
+        add_vert(vertices, v8);
 
-    //F8
-    add_vert(vertices, v6);
-    add_vert(vertices, v7);
-    add_vert(vertices, v8);
+        //E8
+        add_vert(vertices, v6);
+        add_vert(vertices, v8);
 
-    //F9
-    add_vert(vertices, v2);
-    add_vert(vertices, v4);
-    add_vert(vertices, v8);
+        //E9
+        add_vert(vertices, v1);
+        add_vert(vertices, v5);
 
-    //F10
-    add_vert(vertices, v2);
-    add_vert(vertices, v6);
-    add_vert(vertices, v8);
+        //E10
+        add_vert(vertices, v3);
+        add_vert(vertices, v7);
 
-    //F11
-    add_vert(vertices, v3);
-    add_vert(vertices, v4);
-    add_vert(vertices, v8);
+        //E11
+        add_vert(vertices, v4);
+        add_vert(vertices, v8);
 
-    //F12
-    add_vert(vertices, v3);
-    add_vert(vertices, v7);
-    add_vert(vertices, v8);
+        //E12
+        add_vert(vertices, v2);
+        add_vert(vertices, v6);
+    } else {
+        //F1
+        add_vert(vertices, v1);
+        add_vert(vertices, v2);
+        add_vert(vertices, v3);
+
+        //F2
+        add_vert(vertices, v2);
+        add_vert(vertices, v3);
+        add_vert(vertices, v4);
+
+        //F3
+        add_vert(vertices, v1);
+        add_vert(vertices, v3);
+        add_vert(vertices, v7);
+
+        //F4
+        add_vert(vertices, v1);
+        add_vert(vertices, v5);
+        add_vert(vertices, v7);
+
+        //F5
+        add_vert(vertices, v1);
+        add_vert(vertices, v2);
+        add_vert(vertices, v6);
+
+        //F6
+        add_vert(vertices, v1);
+        add_vert(vertices, v5);
+        add_vert(vertices, v6);
+
+        //F7
+        add_vert(vertices, v5);
+        add_vert(vertices, v6);
+        add_vert(vertices, v7);
+
+        //F8
+        add_vert(vertices, v6);
+        add_vert(vertices, v7);
+        add_vert(vertices, v8);
+
+        //F9
+        add_vert(vertices, v2);
+        add_vert(vertices, v4);
+        add_vert(vertices, v8);
+
+        //F10
+        add_vert(vertices, v2);
+        add_vert(vertices, v6);
+        add_vert(vertices, v8);
+
+        //F11
+        add_vert(vertices, v3);
+        add_vert(vertices, v4);
+        add_vert(vertices, v8);
+
+        //F12
+        add_vert(vertices, v3);
+        add_vert(vertices, v7);
+        add_vert(vertices, v8);
+    }
 }
 
 fn draw(
@@ -269,12 +349,14 @@ fn draw(
     vbo: &web_sys::WebGlBuffer,
     vao: &web_sys::WebGlVertexArrayObject,
     program: &web_sys::WebGlProgram,
-    state: &mut RunnerState,
+    state: std::sync::Arc<std::sync::RwLock<RunnerState>>,
 ) {
     web_sys::console::log_1(&"Drawing...".into());
 
-    web_sys::console::log_1(&format!("{:?}", state.rigid_body).into());
-    web_sys::console::log_1(&format!("{:?}", state.rigid_body.rot_mat.determinant()).into());
+    let mut state_locked = state.write().unwrap();
+
+    web_sys::console::log_1(&format!("{:?}", state_locked.rigid_body).into());
+    web_sys::console::log_1(&format!("{:?}", state_locked.rigid_body.rot_mat.determinant()).into());
 
     //let vertices: [f32; 9] = [
     //    -0.7,
@@ -289,14 +371,15 @@ fn draw(
     //];
 
     let mut vertices: Vec<f32> = Vec::new();
-    cuboid_to_vertices(&mut vertices, &state.rigid_body);
-
-    ctx.bind_buffer(web_sys::WebGl2RenderingContext::ARRAY_BUFFER, Some(&vbo));
-    ctx.bind_vertex_array(Some(&vao));
+    cuboid_to_vertices(
+        &mut vertices,
+        &state_locked.rigid_body,
+        state_locked.wireframe,
+    );
 
     let aspect = 1.333;
     let fovy: f32 = 75.0 * std::f32::consts::PI / 180.0;
-    let tan_half_fovy = (fovy / 2.0).tan();
+    //let tan_half_fovy = (fovy / 2.0).tan();
     let z_far = 1000.0;
     let z_near = 0.01;
 
@@ -311,6 +394,10 @@ fn draw(
 
     let translation = nalgebra::Translation3::<f32>::new(0.0, 0.0, -5.0);
     let proj_mat = persp.as_matrix() * translation.to_homogeneous();
+
+    ctx.bind_buffer(web_sys::WebGl2RenderingContext::ARRAY_BUFFER, Some(&vbo));
+    ctx.bind_vertex_array(Some(&vao));
+    ctx.use_program(Some(program));
 
     let proj_uni_loc = ctx
         .get_uniform_location(program, "projection")
@@ -336,8 +423,12 @@ fn draw(
     ctx.clear_color(0.0, 0.0, 0.0, 1.0);
     ctx.clear(web_sys::WebGl2RenderingContext::COLOR_BUFFER_BIT);
 
-    ctx.draw_arrays(web_sys::WebGl2RenderingContext::TRIANGLES, 0, vert_count);
+    if state_locked.wireframe {
+        ctx.draw_arrays(web_sys::WebGl2RenderingContext::LINES, 0, vert_count);
+    } else {
+        ctx.draw_arrays(web_sys::WebGl2RenderingContext::TRIANGLES, 0, vert_count);
+    }
 
-    state.counter += 1;
-    state.rigid_body.step_sim(0.1);
+    state_locked.counter += 1;
+    state_locked.rigid_body.step_sim(0.1);
 }
