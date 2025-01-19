@@ -64,9 +64,9 @@ impl RunnerState {
             counter: 0,
             rigid_body: physsim::RigidBody {
                 pos: nalgebra::Vector3::new(0.0, 0.0, 0.0),
-                lin_vel: nalgebra::Vector3::new(0.01, -0.02, 0.0),
+                lin_vel: nalgebra::Vector3::new(0.1, 0.0, 0.0),
                 rot_mat: nalgebra::Matrix3::identity(),
-                ang_mom: nalgebra::Vector3::new(0.5, -0.1, 0.3),
+                ang_mom: nalgebra::Vector3::new(0.5, 0.0, 0.0),
                 inv_ine: nalgebra::Matrix3::new(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
             },
             wireframe: false,
@@ -105,7 +105,9 @@ impl Runner {
             .dyn_into::<web_sys::WebGl2RenderingContext>()
             .unwrap();
 
-        let vert_shader = compile_shader(
+        let vbo = ctx.create_buffer().ok_or("Couldn't create VBO")?;
+
+        let vert_shader_plain = compile_shader(
             &ctx,
             web_sys::WebGl2RenderingContext::VERTEX_SHADER,
             r##"#version 300 es
@@ -118,8 +120,7 @@ impl Runner {
             }
             "##,
         )?;
-
-        let frag_shader = compile_shader(
+        let frag_shader_plain = compile_shader(
             &ctx,
             web_sys::WebGl2RenderingContext::FRAGMENT_SHADER,
             r##"#version 300 es
@@ -133,36 +134,99 @@ impl Runner {
             "##,
         )?;
 
-        let program = link_program(&ctx, &vert_shader, &frag_shader)?;
-        ctx.use_program(Some(&program));
+        let program_plain = link_program(&ctx, &vert_shader_plain, &frag_shader_plain)?;
+        ctx.use_program(Some(&program_plain));
 
-        web_sys::console::log_1(&("Initialized WebGL2!".into()));
-
-        let pos_attrib_idx = ctx.get_attrib_location(&program, "position");
-        let vbo = ctx.create_buffer().ok_or("Couldn't create VBO")?;
+        let vao_plain = ctx.create_vertex_array().ok_or("Couldn't create VAO")?;
+        ctx.bind_vertex_array(Some(&vao_plain));
         ctx.bind_buffer(web_sys::WebGl2RenderingContext::ARRAY_BUFFER, Some(&vbo));
 
-        let vao = ctx.create_vertex_array().ok_or("Couldn't create VAO")?;
-        ctx.bind_vertex_array(Some(&vao));
-
-        ctx.enable_vertex_attrib_array(pos_attrib_idx as u32);
+        let plain_pos_attrib_idx = ctx.get_attrib_location(&program_plain, "position");
+        ctx.enable_vertex_attrib_array(plain_pos_attrib_idx as u32);
         ctx.vertex_attrib_pointer_with_i32(
-            pos_attrib_idx as u32,
+            plain_pos_attrib_idx as u32,
             3,
             web_sys::WebGl2RenderingContext::FLOAT,
             false,
-            0,
-            0,
+            3 * 4,
+            0 * 4,
         );
 
-        ctx.bind_vertex_array(Some(&vao));
+        let vert_shader_colored = compile_shader(
+            &ctx,
+            web_sys::WebGl2RenderingContext::VERTEX_SHADER,
+            r##"#version 300 es
 
-        let mut runner_state = std::sync::Arc::new(std::sync::RwLock::new(RunnerState::new()));
+            in vec3 position;
+            in vec3 color;
+            uniform mat4 projection;
+            out vec3 fColor;
+
+            void main() {
+                gl_Position = projection * vec4(position, 1.0);
+                fColor = color;
+            }
+            "##,
+        )?;
+        let frag_shader_colored = compile_shader(
+            &ctx,
+            web_sys::WebGl2RenderingContext::FRAGMENT_SHADER,
+            r##"#version 300 es
+
+            precision highp float;
+            in vec3 fColor;
+            out vec4 outColor;
+
+            void main() {
+                outColor = vec4(fColor, 1);
+            }
+            "##,
+        )?;
+
+        let program_colored = link_program(&ctx, &vert_shader_colored, &frag_shader_colored)?;
+        ctx.use_program(Some(&program_colored));
+
+        let vao_colored = ctx.create_vertex_array().ok_or("Couldn't create VAO")?;
+        ctx.bind_vertex_array(Some(&vao_colored));
+        ctx.bind_buffer(web_sys::WebGl2RenderingContext::ARRAY_BUFFER, Some(&vbo));
+
+        let colored_pos_attrib_idx = ctx.get_attrib_location(&program_colored, "position");
+        ctx.enable_vertex_attrib_array(colored_pos_attrib_idx as u32);
+        ctx.vertex_attrib_pointer_with_i32(
+            colored_pos_attrib_idx as u32,
+            3,
+            web_sys::WebGl2RenderingContext::FLOAT,
+            false,
+            6 * 4,
+            0 * 4,
+        );
+        let colored_color_attrib_idx = ctx.get_attrib_location(&program_colored, "color");
+        ctx.enable_vertex_attrib_array(colored_color_attrib_idx as u32);
+        ctx.vertex_attrib_pointer_with_i32(
+            colored_color_attrib_idx as u32,
+            3,
+            web_sys::WebGl2RenderingContext::FLOAT,
+            false,
+            6 * 4,
+            3 * 4,
+        );
+
+        web_sys::console::log_1(&("Initialized WebGL2!".into()));
+
+        let runner_state = std::sync::Arc::new(std::sync::RwLock::new(RunnerState::new()));
 
         let interval_closure = {
             let runner_state = runner_state.clone();
             Closure::new(move || {
-                draw(&ctx, &vbo, &vao, &program, runner_state.clone());
+                draw(
+                    &ctx,
+                    &vbo,
+                    &vao_plain,
+                    &program_plain,
+                    &vao_colored,
+                    &program_colored,
+                    runner_state.clone(),
+                );
             })
         };
         let token = window.set_interval_with_callback_and_timeout_and_arguments_0(
@@ -427,11 +491,78 @@ fn cuboid_to_vertices(
     }
 }
 
+fn vector_to_vertices(
+    vertices: &mut Vec<f32>,
+    pos: &nalgebra::Vector3<f32>,
+    v: &nalgebra::Vector3<f32>,
+    color: Option<(f32, f32, f32)>,
+    tip_size: f32,
+) {
+    fn add_vert(
+        vertices: &mut Vec<f32>,
+        v: &nalgebra::Vector3<f32>,
+        color: Option<(f32, f32, f32)>,
+    ) {
+        vertices.push(v.x);
+        vertices.push(v.y);
+        vertices.push(v.z);
+        if let Some(color) = color {
+            vertices.push(color.0);
+            vertices.push(color.1);
+            vertices.push(color.2);
+        }
+    }
+
+    // Main vector line
+    add_vert(vertices, pos, color);
+    add_vert(vertices, &(pos + v), color);
+
+    // Vector tip
+    add_vert(vertices, &(pos + v), color);
+    add_vert(
+        vertices,
+        &(pos + v + nalgebra::Vector3::new(tip_size, 0.0, 0.0)),
+        color,
+    );
+    add_vert(vertices, &(pos + v), color);
+    add_vert(
+        vertices,
+        &(pos + v + nalgebra::Vector3::new(-tip_size, 0.0, 0.0)),
+        color,
+    );
+    add_vert(vertices, &(pos + v), color);
+    add_vert(
+        vertices,
+        &(pos + v + nalgebra::Vector3::new(0.0, tip_size, 0.0)),
+        color,
+    );
+    add_vert(vertices, &(pos + v), color);
+    add_vert(
+        vertices,
+        &(pos + v + nalgebra::Vector3::new(0.0, -tip_size, 0.0)),
+        color,
+    );
+    add_vert(vertices, &(pos + v), color);
+    add_vert(
+        vertices,
+        &(pos + v + nalgebra::Vector3::new(0.0, 0.0, tip_size)),
+        color,
+    );
+    add_vert(vertices, &(pos + v), color);
+    add_vert(
+        vertices,
+        &(pos + v + nalgebra::Vector3::new(0.0, 0.0, -tip_size)),
+        color,
+    );
+}
+
 fn draw(
     ctx: &web_sys::WebGl2RenderingContext,
     vbo: &web_sys::WebGlBuffer,
-    vao: &web_sys::WebGlVertexArrayObject,
-    program: &web_sys::WebGlProgram,
+    vao_plain: &web_sys::WebGlVertexArrayObject,
+    program_plain: &web_sys::WebGlProgram,
+    vao_colored: &web_sys::WebGlVertexArrayObject,
+    program_colored: &web_sys::WebGlProgram,
     state: std::sync::Arc<std::sync::RwLock<RunnerState>>,
 ) {
     web_sys::console::log_1(&"Drawing...".into());
@@ -452,13 +583,6 @@ fn draw(
     //    0.7,
     //    0.0,
     //];
-
-    let mut vertices: Vec<f32> = Vec::new();
-    cuboid_to_vertices(
-        &mut vertices,
-        &state_locked.rigid_body,
-        state_locked.wireframe,
-    );
 
     let aspect = 1.333;
     let fovy: f32 = 75.0 * std::f32::consts::PI / 180.0;
@@ -481,40 +605,139 @@ fn draw(
             .try_inverse()
             .unwrap();
 
-    ctx.bind_buffer(web_sys::WebGl2RenderingContext::ARRAY_BUFFER, Some(&vbo));
-    ctx.bind_vertex_array(Some(&vao));
-    ctx.use_program(Some(program));
+    ctx.use_program(Some(program_plain));
+    ctx.bind_vertex_array(Some(&vao_plain));
+    //ctx.bind_buffer(web_sys::WebGl2RenderingContext::ARRAY_BUFFER, Some(&vbo));
 
-    let proj_uni_loc = ctx
-        .get_uniform_location(program, "projection")
+    let plain_proj_uni_loc = ctx
+        .get_uniform_location(program_plain, "projection")
         .expect("Uniform projection not found");
     ctx.uniform_matrix4fv_with_f32_array(
-        Some(&proj_uni_loc),
+        Some(&plain_proj_uni_loc),
         false,
         &proj_mat.data.0.as_flattened(),
     );
 
-    unsafe {
-        let vertices_view = js_sys::Float32Array::view(&vertices);
+    let mut vertices_plain: Vec<f32> = Vec::new();
+    cuboid_to_vertices(
+        &mut vertices_plain,
+        &state_locked.rigid_body,
+        state_locked.wireframe,
+    );
 
-        ctx.buffer_data_with_array_buffer_view(
-            web_sys::WebGl2RenderingContext::ARRAY_BUFFER,
-            &vertices_view,
-            web_sys::WebGl2RenderingContext::STATIC_DRAW,
-        );
-    }
+    //unsafe {
+    //    let vertices_view = js_sys::Float32Array::view(&vertices_plain);
+    //
+    //    ctx.buffer_data_with_array_buffer_view(
+    //        web_sys::WebGl2RenderingContext::ARRAY_BUFFER,
+    //        &vertices_view,
+    //        web_sys::WebGl2RenderingContext::DYNAMIC_DRAW,
+    //    );
+    //}
+    let vertices_plain_f32_array =
+        js_sys::Float32Array::new_with_length(vertices_plain.len() as u32);
+    vertices_plain_f32_array.copy_from(&vertices_plain);
+    ctx.buffer_data_with_array_buffer_view(
+        web_sys::WebGl2RenderingContext::ARRAY_BUFFER,
+        &vertices_plain_f32_array,
+        web_sys::WebGl2RenderingContext::DYNAMIC_DRAW,
+    );
 
-    let vert_count = (vertices.len() / 3) as i32;
+    let vert_count_plain = (vertices_plain.len() / 3) as i32;
 
     ctx.clear_color(0.0, 0.0, 0.0, 1.0);
     ctx.clear(web_sys::WebGl2RenderingContext::COLOR_BUFFER_BIT);
 
     if state_locked.wireframe {
-        ctx.draw_arrays(web_sys::WebGl2RenderingContext::LINES, 0, vert_count);
+        ctx.draw_arrays(web_sys::WebGl2RenderingContext::LINES, 0, vert_count_plain);
     } else {
-        ctx.draw_arrays(web_sys::WebGl2RenderingContext::TRIANGLES, 0, vert_count);
+        ctx.draw_arrays(
+            web_sys::WebGl2RenderingContext::TRIANGLES,
+            0,
+            vert_count_plain,
+        );
     }
 
+    ctx.use_program(Some(program_colored));
+    ctx.bind_vertex_array(Some(&vao_colored));
+    //ctx.bind_buffer(web_sys::WebGl2RenderingContext::ARRAY_BUFFER, Some(&vbo));
+
+    let colored_proj_uni_loc = ctx
+        .get_uniform_location(program_colored, "projection")
+        .expect("Uniform projection not found");
+    ctx.uniform_matrix4fv_with_f32_array(
+        Some(&colored_proj_uni_loc),
+        false,
+        &proj_mat.data.0.as_flattened(),
+    );
+
+    let mut vertices_colored: Vec<f32> = Vec::new();
+
+    let coords_system_axes_sizes = 5.0;
+    vector_to_vertices(
+        &mut vertices_colored,
+        &nalgebra::Vector3::zeros(),
+        &nalgebra::Vector3::new(coords_system_axes_sizes, 0.0, 0.0),
+        Some((1.0, 0.0, 0.0)),
+        0.5,
+    );
+    vector_to_vertices(
+        &mut vertices_colored,
+        &nalgebra::Vector3::zeros(),
+        &nalgebra::Vector3::new(0.0, coords_system_axes_sizes, 0.0),
+        Some((0.0, 1.0, 0.0)),
+        0.5,
+    );
+    vector_to_vertices(
+        &mut vertices_colored,
+        &nalgebra::Vector3::zeros(),
+        &nalgebra::Vector3::new(0.0, 0.0, coords_system_axes_sizes),
+        Some((0.0, 0.0, 1.0)),
+        0.5,
+    );
+
+    vector_to_vertices(
+        &mut vertices_colored,
+        &state_locked.rigid_body.pos,
+        &state_locked.rigid_body.lin_vel,
+        Some((1.0, 1.0, 0.0)),
+        0.1,
+    );
+    vector_to_vertices(
+        &mut vertices_colored,
+        &state_locked.rigid_body.pos,
+        &state_locked.rigid_body.ang_mom,
+        Some((0.0, 1.0, 1.0)),
+        0.1,
+    );
+
+    //unsafe {
+    //    let vertices_view = js_sys::Float32Array::view(&vertices_colored);
+    //
+    //    ctx.buffer_data_with_array_buffer_view(
+    //        web_sys::WebGl2RenderingContext::ARRAY_BUFFER,
+    //        &vertices_view,
+    //        web_sys::WebGl2RenderingContext::DYNAMIC_DRAW,
+    //    );
+    //}
+    let vertices_colored_f32_array =
+        js_sys::Float32Array::new_with_length(vertices_colored.len() as u32);
+    vertices_colored_f32_array.copy_from(&vertices_colored);
+    ctx.buffer_data_with_array_buffer_view(
+        web_sys::WebGl2RenderingContext::ARRAY_BUFFER,
+        &vertices_colored_f32_array,
+        web_sys::WebGl2RenderingContext::DYNAMIC_DRAW,
+    );
+
+    let vert_count_colored = (vertices_colored.len() / 6) as i32;
+    web_sys::console::log_1(&format!("vert_count_colored = {}", vertices_colored.len()).into());
+    ctx.draw_arrays(
+        web_sys::WebGl2RenderingContext::LINES,
+        0,
+        vert_count_colored,
+    );
+
+    // Camera movement
     if state_locked.keys_pressed.w {
         let cam_rot_mat = state_locked.camera_rot.to_homogeneous();
         state_locked.camera_pos +=
