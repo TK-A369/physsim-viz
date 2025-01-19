@@ -5,15 +5,8 @@ use web_sys;
 
 use physsim;
 
-#[wasm_bindgen]
-extern "C" {
-    fn alert(s: &str);
-}
-
-#[wasm_bindgen]
-pub fn greet() {
-    alert("Hello, physsim-viz-rust!");
-}
+const DRAW_INTERVAL: f32 = 100.0;
+const PHYSICS_INTERVAL: f32 = 10.0;
 
 struct KeysPressed {
     w: bool,
@@ -79,10 +72,12 @@ impl RunnerState {
 
 #[wasm_bindgen]
 pub struct Runner {
-    interval_closure: wasm_bindgen::closure::Closure<dyn FnMut()>,
+    draw_interval_closure: wasm_bindgen::closure::Closure<dyn FnMut()>,
+    draw_interval_token: i32,
+    physics_interval_closure: wasm_bindgen::closure::Closure<dyn FnMut()>,
+    physics_interval_token: i32,
     keydown_closure: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::KeyboardEvent)>,
     keyup_closure: wasm_bindgen::closure::Closure<dyn FnMut(web_sys::KeyboardEvent)>,
-    token: i32,
 }
 
 #[wasm_bindgen]
@@ -215,7 +210,7 @@ impl Runner {
 
         let runner_state = std::sync::Arc::new(std::sync::RwLock::new(RunnerState::new()));
 
-        let interval_closure = {
+        let draw_interval_closure = {
             let runner_state = runner_state.clone();
             Closure::new(move || {
                 draw(
@@ -229,10 +224,22 @@ impl Runner {
                 );
             })
         };
-        let token = window.set_interval_with_callback_and_timeout_and_arguments_0(
-            interval_closure.as_ref().unchecked_ref(),
-            100,
+        let draw_interval_token = window.set_interval_with_callback_and_timeout_and_arguments_0(
+            draw_interval_closure.as_ref().unchecked_ref(),
+            DRAW_INTERVAL as i32,
         )?;
+
+        let physics_interval_closure = {
+            let runner_state = runner_state.clone();
+            Closure::new(move || {
+                physics_step(runner_state.clone());
+            })
+        };
+        let physics_interval_token = window
+            .set_interval_with_callback_and_timeout_and_arguments_0(
+                physics_interval_closure.as_ref().unchecked_ref(),
+                PHYSICS_INTERVAL as i32,
+            )?;
 
         // Keypresses
         let keydown_closure = {
@@ -292,10 +299,12 @@ impl Runner {
             .unwrap();
 
         Ok(Runner {
-            interval_closure,
+            draw_interval_closure,
+            draw_interval_token,
+            physics_interval_closure,
+            physics_interval_token,
             keydown_closure,
             keyup_closure,
-            token,
         })
     }
 }
@@ -304,7 +313,7 @@ impl Drop for Runner {
     fn drop(&mut self) {
         web_sys::console::log_1(&"Dropping Runner...".into());
         match web_sys::window() {
-            Some(window) => window.clear_interval_with_handle(self.token),
+            Some(window) => window.clear_interval_with_handle(self.draw_interval_token),
             _ => {}
         }
     }
@@ -567,7 +576,7 @@ fn draw(
 ) {
     web_sys::console::log_1(&"Drawing...".into());
 
-    let mut state_locked = state.write().unwrap();
+    let state_locked = state.read().unwrap();
 
     web_sys::console::log_1(&format!("{:?}", state_locked.rigid_body).into());
     web_sys::console::log_1(&format!("{:?}", state_locked.rigid_body.rot_mat.determinant()).into());
@@ -736,64 +745,70 @@ fn draw(
         0,
         vert_count_colored,
     );
+}
+
+fn physics_step(state: std::sync::Arc<std::sync::RwLock<RunnerState>>) {
+    let mut state_locked = state.write().unwrap();
 
     // Camera movement
+    let cam_linear_speed: f32 = 0.001 * PHYSICS_INTERVAL;
+    let cam_angular_sleep: f32 = 0.001 * PHYSICS_INTERVAL;
     if state_locked.keys_pressed.w {
         let cam_rot_mat = state_locked.camera_rot.to_homogeneous();
         state_locked.camera_pos +=
-            (cam_rot_mat * nalgebra::Vector4::new(0.0, 0.0, -0.1, 1.0)).rows(0, 3);
+            (cam_rot_mat * nalgebra::Vector4::new(0.0, 0.0, -cam_linear_speed, 1.0)).rows(0, 3);
     }
     if state_locked.keys_pressed.s {
         let cam_rot_mat = state_locked.camera_rot.to_homogeneous();
         state_locked.camera_pos +=
-            (cam_rot_mat * nalgebra::Vector4::new(0.0, 0.0, 0.1, 1.0)).rows(0, 3);
+            (cam_rot_mat * nalgebra::Vector4::new(0.0, 0.0, cam_linear_speed, 1.0)).rows(0, 3);
     }
     if state_locked.keys_pressed.a {
         let cam_rot_mat = state_locked.camera_rot.to_homogeneous();
         state_locked.camera_pos +=
-            (cam_rot_mat * nalgebra::Vector4::new(-0.1, 0.0, 0.0, 1.0)).rows(0, 3);
+            (cam_rot_mat * nalgebra::Vector4::new(-cam_linear_speed, 0.0, 0.0, 1.0)).rows(0, 3);
     }
     if state_locked.keys_pressed.d {
         let cam_rot_mat = state_locked.camera_rot.to_homogeneous();
         state_locked.camera_pos +=
-            (cam_rot_mat * nalgebra::Vector4::new(0.1, 0.0, -0.0, 1.0)).rows(0, 3);
+            (cam_rot_mat * nalgebra::Vector4::new(cam_linear_speed, 0.0, 0.0, 1.0)).rows(0, 3);
     }
     if state_locked.keys_pressed.q {
         let cam_rot_mat = state_locked.camera_rot.to_homogeneous();
         state_locked.camera_pos +=
-            (cam_rot_mat * nalgebra::Vector4::new(0.0, -0.1, 0.0, 1.0)).rows(0, 3);
+            (cam_rot_mat * nalgebra::Vector4::new(0.0, -cam_linear_speed, 0.0, 1.0)).rows(0, 3);
     }
     if state_locked.keys_pressed.e {
         let cam_rot_mat = state_locked.camera_rot.to_homogeneous();
         state_locked.camera_pos +=
-            (cam_rot_mat * nalgebra::Vector4::new(0.0, 0.1, 0.0, 1.0)).rows(0, 3);
+            (cam_rot_mat * nalgebra::Vector4::new(0.0, cam_linear_speed, 0.0, 1.0)).rows(0, 3);
     }
 
     if state_locked.keys_pressed.i {
         state_locked.camera_rot = state_locked.camera_rot
-            * nalgebra::Rotation3::<f32>::new(nalgebra::Vector3::new(0.1, 0.0, 0.0));
+            * nalgebra::Rotation3::<f32>::new(nalgebra::Vector3::new(cam_angular_sleep, 0.0, 0.0));
     }
     if state_locked.keys_pressed.k {
         state_locked.camera_rot = state_locked.camera_rot
-            * nalgebra::Rotation3::<f32>::new(nalgebra::Vector3::new(-0.1, 0.0, 0.0));
+            * nalgebra::Rotation3::<f32>::new(nalgebra::Vector3::new(-cam_angular_sleep, 0.0, 0.0));
     }
     if state_locked.keys_pressed.j {
         state_locked.camera_rot = state_locked.camera_rot
-            * nalgebra::Rotation3::<f32>::new(nalgebra::Vector3::new(0.0, 0.1, 0.0));
+            * nalgebra::Rotation3::<f32>::new(nalgebra::Vector3::new(0.0, cam_angular_sleep, 0.0));
     }
     if state_locked.keys_pressed.l {
         state_locked.camera_rot = state_locked.camera_rot
-            * nalgebra::Rotation3::<f32>::new(nalgebra::Vector3::new(0.0, -0.1, 0.0));
+            * nalgebra::Rotation3::<f32>::new(nalgebra::Vector3::new(0.0, -cam_angular_sleep, 0.0));
     }
     if state_locked.keys_pressed.u {
         state_locked.camera_rot = state_locked.camera_rot
-            * nalgebra::Rotation3::<f32>::new(nalgebra::Vector3::new(0.0, 0.0, 0.1));
+            * nalgebra::Rotation3::<f32>::new(nalgebra::Vector3::new(0.0, 0.0, cam_angular_sleep));
     }
     if state_locked.keys_pressed.o {
         state_locked.camera_rot = state_locked.camera_rot
-            * nalgebra::Rotation3::<f32>::new(nalgebra::Vector3::new(0.0, 0.0, -0.1));
+            * nalgebra::Rotation3::<f32>::new(nalgebra::Vector3::new(0.0, 0.0, -cam_angular_sleep));
     }
 
     state_locked.counter += 1;
-    state_locked.rigid_body.step_sim(0.1);
+    state_locked.rigid_body.step_sim(PHYSICS_INTERVAL / 1000.0);
 }
